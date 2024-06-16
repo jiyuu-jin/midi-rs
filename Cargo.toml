@@ -1,0 +1,9 @@
+[package]
+name = "midi_keyboard_decoder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+midi-control = "0.2.2"
+midir = "0.10.0"
+rodio = "0.18.1"
