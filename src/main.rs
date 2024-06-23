@@ -99,19 +99,23 @@ fn decode_midi_message(synth: &mut Synthesizer, message: &[u8]) {
             message[0] & 0x0F,
             message[1]
         ),
-        0xE0..=0xEF => println!(
-            "Pitch Bend Change: channel={}, lsb={}, msb={}",
-            message[0] & 0x0F,
-            message[1],
-            message[2]
-        ),
+        0xE0..=0xEF => {
+            let value = ((message[2] as u16) << 7) | message[1] as u16;
+            println!(
+                "Pitch Bend Change: channel={}, value={}",
+                message[0] & 0x0F,
+                value
+            );
+            synth.pitch_bend_change(value);
+        }
         _ => println!("Unknown message: {:?}", message),
     }
 }
 
 struct Synthesizer {
     stream_handle: rodio::OutputStreamHandle,
-    sinks: HashMap<u8, Sink>,
+    sinks: HashMap<u8, (Sink, f32)>, // Store the sink and the base frequency
+    pitch_bend_value: i16,
 }
 
 impl Synthesizer {
@@ -119,20 +123,46 @@ impl Synthesizer {
         Synthesizer {
             stream_handle,
             sinks: HashMap::new(),
+            pitch_bend_value: 0,
         }
     }
 
     fn note_on(&mut self, note: u8, velocity: u8) {
-        let frequency = midi_note_to_freq(note);
+        let base_frequency = midi_note_to_freq(note);
+        let frequency = self.apply_pitch_bend(base_frequency);
         let sink = Sink::try_new(&self.stream_handle).unwrap();
         sink.append(SineWave::new(frequency));
-        self.sinks.insert(note, sink);
+        self.sinks.insert(note, (sink, base_frequency));
     }
 
     fn note_off(&mut self, note: u8) {
-        if let Some(sink) = self.sinks.remove(&note) {
+        if let Some((sink, _)) = self.sinks.remove(&note) {
             sink.stop();
         }
+    }
+
+    fn pitch_bend_change(&mut self, value: u16) {
+        self.pitch_bend_value = (value as i16) - 8192;
+        let changes: Vec<(u8, f32)> = self
+            .sinks
+            .iter()
+            .map(|(&note, &(_, base_frequency))| (note, self.apply_pitch_bend(base_frequency)))
+            .collect();
+
+        for (note, new_frequency) in changes {
+            if let Some((sink, _)) = self.sinks.get_mut(&note) {
+                sink.pause();
+                sink.clear();
+                sink.append(SineWave::new(new_frequency));
+                sink.play();
+            }
+        }
+    }
+
+    fn apply_pitch_bend(&self, base_frequency: f32) -> f32 {
+        let semitone_ratio = 2.0f32.powf(1.0 / 12.0);
+        let bend_amount = self.pitch_bend_value as f32 / 8192.0 * 2.0; // +/- 2 semitones
+        base_frequency * semitone_ratio.powf(bend_amount)
     }
 }
 
